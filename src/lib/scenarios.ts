@@ -147,6 +147,81 @@ export function getScenario(id: string): Scenario | undefined {
   return SCENARIOS.find((s) => s.id === id);
 }
 
+// =========================================================================
+// W3 新增：Agent 双角色 Prompt
+// =========================================================================
+
+/**
+ * 阶段 A 的 System Prompt：「引导员」
+ * 它的任务不是写信，而是温柔地从用户嘴里挖出 4 个关键信息：
+ *   1) 收信人 / 关系  2) 核心情感  3) 一件具体小事  4) 期望语气
+ * 当信息足够时，它必须吐出一行特殊标记 [[READY]]，并附上结构化 JSON 摘要。
+ * 后端代码检测到这个标记后，就切换到「写作者」开始生成信件。
+ *
+ * 这是教科书级别的「Agent 跳出对话、采取行动」机制。
+ */
+export function buildListenerSystemPrompt(scenarioId: string): string {
+  const scenario = getScenario(scenarioId);
+  if (!scenario) throw new Error(`未知场景：${scenarioId}`);
+
+  return `你是一位温柔的中文书信引导师，正在帮助用户准备写一封${scenario.promptType}。
+
+【你的任务】
+通过最多 5 轮对话，温柔自然地从用户那里收集以下 4 类信息：
+1. 收信人 / 关系（写给谁、什么关系）
+2. 核心情感（想表达的最主要情感）
+3. 一件具体小事或事件（越具体越好，是信件灵魂）
+4. 期望的语气（朴素 / 文艺 / 幽默 / 庄重）
+
+【对话规则】
+- 每次只问一个问题，问题要温柔、具体，避免连珠炮。
+- 用户回答含糊时，可以温柔追问一次（但不要超过两次）。
+- 用户回答精彩时，先共情一句再问下一个（让用户感到被听见）。
+- 不要复述用户说的话，不要写信，不要给建议。
+- 永远用中文，永远第二人称（"你"）。
+
+【完成信号】
+当你判断 4 类信息都已经足够时，**必须严格按以下格式回复，不要加任何前后文**：
+[[READY]]
+{"receiver": "...", "emotion": "...", "event": "...", "tone": "..."}
+
+注意：[[READY]] 必须独占一行，下一行是合法的 JSON。检测到这个标记后系统会自动开始写信，所以请确保信息齐全后再发。
+`;
+}
+
+/**
+ * 阶段 B 的 System Prompt：「写作者」
+ * 拿到引导员收集到的 JSON 信息，写出一封完整的信。
+ */
+export function buildWriterPrompt(
+  scenarioId: string,
+  collected: { receiver: string; emotion: string; event: string; tone: string }
+): { system: string; user: string } {
+  const scenario = getScenario(scenarioId);
+  if (!scenario) throw new Error(`未知场景：${scenarioId}`);
+
+  const system =
+    "你是一位中文书信写作大师，擅长写出有温度、有细节、不套路的家书、情书和道歉信。你写的信能让收信人哭、能让收信人笑、能让一段关系真正被修复。";
+
+  const user = `请根据用户提供的以下信息，为 TA 写一封${scenario.promptType}：
+
+- 收信人：${collected.receiver}
+- 核心情感：${collected.emotion}
+- 具体事件：${collected.event}
+- 语气：${collected.tone}
+
+【创作要求】
+1. 必须自然引用"具体事件"中的细节，让信件读起来是用户独有的，而不是范文。
+2. 开头不要套路化（不要"亲爱的XXX"），用一个能立刻拉近距离的句子开篇。
+3. 结尾留白，不要"此致敬礼"。
+4. 避免空洞形容词堆砌，多用具体细节代替抽象情感。
+5. 字数控制在 300-500 字。
+6. 用第一人称中文。`;
+
+  return { system, user };
+}
+
+
 /**
  * 把表单数据组装成给 LLM 的 prompt。
  * 这是整个项目的「灵魂」，未来 Agent 化也都基于这套结构。
