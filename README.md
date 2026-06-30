@@ -2,8 +2,13 @@
 
 > 一个会**自我评审、必要时重写**的 4 角色 AI Agent。给一段真实素材，它会用你选择的文学风格，写出一封不套路的家书、情书或道歉信。
 
-🔗 **在线体验**：[https://letter-agent.vercel.app](https://letter-agent.vercel.app)（请替换为你的实际域名）
+🔗 **在线体验**：[https://letter-agent.vercel.app](https://letter-agent.vercel.app)（手机端建议绑定自定义域名后访问，详见 `docs/DEPLOY.md`）
 💻 **源码**：[https://github.com/rainbowroy/letter-agent](https://github.com/rainbowroy/letter-agent)
+
+📚 **配套文档**：
+- 📘 [docs/DEPLOY.md](./docs/DEPLOY.md) · 5 分钟 Vercel 上线 + 90 秒 Demo 录制脚本 + 简历项目经历模板
+- 📕 [docs/blog.md](./docs/blog.md) · 技术博客《我用 6 周做了一个会自我评审的 Agent》（可直接发掘金/知乎/小红书）
+- 📗 [docs/interview-faq.md](./docs/interview-faq.md) · 面试 FAQ（Self-Critique / JSON Mode / Stream Protocol 三大核心设计的深度问答）
 
 ---
 
@@ -114,26 +119,89 @@ LLM_MODEL=deepseek-chat
 
 ---
 
-## 📁 关键代码
+## 📁 完整文件结构
+
+> 用 `tree` 风格展示项目所有源文件（已排除 `node_modules`、`.next`、`.git`、`.vercel`）。
+> 每个文件后面是它的职责说明 —— **新人接手的话，从 ★ 标记的文件开始读**。
 
 ```
 letter-agent/
-├── src/
-│   ├── app/
-│   │   ├── page.tsx              # 前端主界面（5 阶段状态机 + 流协议解析）
-│   │   ├── layout.tsx
-│   │   └── api/
-│   │       ├── chat/route.ts     # W1: Hello World 接口
-│   │       ├── generate/route.ts # W2: 表单 → 整封信（流式）
-│   │       └── converse/route.ts # W3+W4: 多轮对话 + Agent Loop ★
-│   └── lib/
-│       ├── scenarios.ts          # ★ 4 个 Prompt 构造器（Listener/Writer/Polisher/Rewriter）
-│       ├── styles.ts             # 5 种文学风格定义
-│       └── history.ts            # localStorage 历史
-└── .env.local                    # gitignored
+│
+├── README.md                        ★ 你正在看的这份文档
+├── package.json                     依赖清单（next / openai / html-to-image / tailwindcss）
+├── package-lock.json                依赖版本锁定
+├── tsconfig.json                    TypeScript 配置
+├── next.config.ts                   Next.js 框架配置（目前空）
+├── next-env.d.ts                    Next.js 类型声明（不要手改）
+├── eslint.config.mjs                ESLint 规则
+├── postcss.config.mjs               PostCSS（给 Tailwind 用）
+├── .gitignore                       Git 忽略清单（含 .env.local、node_modules、.next）
+├── .env.local                       ⚠️ 本地密钥，gitignored 永不上传
+├── .env.local.example               环境变量样板（LLM_API_KEY / LLM_BASE_URL / LLM_MODEL）
+│
+├── AGENTS.md                        AI 助手协作约定（可选，给 Cursor/Codeflicker 看）
+├── CLAUDE.md                        同上，给 Claude Code 看
+│
+├── docs/                            ★ 项目文档目录
+│   ├── DEPLOY.md                    Vercel 部署 5 分钟清单 + Demo 视频脚本 + 简历模板
+│   └── blog.md                      技术博客《我用 6 周做了一个会自我评审的 Agent》
+│
+├── public/                          静态资源（Next.js 自动以 / 开头托管）
+│   ├── file.svg                     默认图标，未使用
+│   ├── globe.svg                    默认图标，未使用
+│   ├── next.svg                     默认图标，未使用
+│   ├── vercel.svg                   默认图标，未使用
+│   └── window.svg                   默认图标，未使用
+│
+└── src/                             ★ 所有源代码
+    │
+    ├── app/                         Next.js App Router 入口（约定大于配置）
+    │   │
+    │   ├── layout.tsx               根布局，HTML <head>、全局字体、lang="zh-CN"
+    │   ├── page.tsx                 ★★★ 前端主界面（~530 行）
+    │   │                              · 5 阶段状态机：pick → chatting → writing
+    │   │                                            → polishing → rewriting → done
+    │   │                              · 流式协议解析（[[STAGE:*]] / [[POLISH:json]]）
+    │   │                              · 风格 Chip 选择器 / 历史抽屉 / 导出 PNG
+    │   ├── globals.css              全局样式，含 Tailwind 指令
+    │   └── favicon.ico              浏览器标签图标
+    │   │
+    │   └── api/                     后端 API 路由（Server-side）
+    │       ├── chat/route.ts          W1 遗留：基础非流式接口（保留用于对比）
+    │       ├── generate/route.ts      W2 遗留：表单 → 整封信流式接口
+    │       └── converse/route.ts    ★★★ W3+W4+W5 的核心：4 角色 Agent Loop
+    │                                  · 阶段 A：Listener 引导（检测 [[READY]]）
+    │                                  · 阶段 B：Writer 流式出稿
+    │                                  · 阶段 C：Polisher 评分（JSON Mode）
+    │                                  · 阶段 D：score<80 → Rewriter 重写（最多 1 次）
+    │
+    └── lib/                         可复用的纯逻辑（无 React 依赖）
+        ├── scenarios.ts             ★★★ 项目"心脏"：场景定义 + 4 个 Prompt 构造器
+        │                              · SCENARIOS：3 个场景（家书/情书/道歉信）
+        │                              · buildListenerSystemPrompt
+        │                              · buildWriterPrompt（接收 styleId）
+        │                              · buildPolisherPrompt（输出 JSON 评分）
+        │                              · buildRewriterPrompt（带反馈重写）
+        │                              · buildPrompt（W2 表单版本，保留）
+        ├── styles.ts                 5 种文学风格（默认/朱自清/王小波/现代口语/港片）
+        │                              · LETTER_STYLES：每种 = 50字风格指令
+        │                              · getStyle(id)：取风格对象
+        └── history.ts                localStorage 历史记录工具
+                                       · loadHistory / saveHistory / deleteHistory
+                                       · 最多存 10 条，超出自动淘汰最旧
 ```
 
-打 ★ 的两个文件是这个项目的"心脏"。
+## 🎯 新人 30 分钟读懂项目的路径
+
+如果一个新工程师接手这个项目，按这个顺序读，30 分钟能完全掌握：
+
+1. **5 分钟**：本文档（README）从头读到这里
+2. **5 分钟**：<kbd>src/lib/scenarios.ts</kbd> — 4 个 Prompt 构造器，看懂"每个角色对模型说什么"
+3. **5 分钟**：<kbd>src/lib/styles.ts</kbd> — 看懂"风格"如何用 Prompt 工程实现
+4. **8 分钟**：<kbd>src/app/api/converse/route.ts</kbd> — 看 Agent Loop 编排逻辑
+5. **7 分钟**：<kbd>src/app/page.tsx</kbd> — 看前端流协议解析（重点看 `runConverse` 函数里的 `while (true)` 块）
+
+读完这 5 个文件，**剩下的都是脚手架**。
 
 ---
 
