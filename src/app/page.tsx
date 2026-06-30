@@ -16,6 +16,16 @@ type Stage = "pick" | "chatting" | "writing" | "polishing" | "rewriting" | "done
 type ChatMessage = { role: "user" | "assistant"; content: string };
 type PolishResult = { score: number; issues: string[]; suggestions: string };
 type ToolCall = { name: string; args: Record<string, unknown>; result: Record<string, unknown> };
+type Collected = {
+  receiver: string;
+  relationship?: string;
+  emotion: string;
+  event: string;
+  details?: string[];
+  background?: string;
+  tone: string;
+};
+type SegmentTarget = { selection: string; start: number; end: number } | null;
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>("pick");
@@ -33,8 +43,17 @@ export default function Home() {
   const [showHistory, setShowHistory] = useState(false);
   const [savedOnce, setSavedOnce] = useState(false); // 避免重复保存
   const [collectedSnapshot, setCollectedSnapshot] = useState<{ receiver: string } | null>(null);
+  const [collected, setCollected] = useState<Collected | null>(null);
+  const [rewriting, setRewriting] = useState(false);
+  const [showFullRewrite, setShowFullRewrite] = useState(false);
+  const [fullRewriteInstruction, setFullRewriteInstruction] = useState("");
+  const [segmentTarget, setSegmentTarget] = useState<SegmentTarget>(null);
+  const [segmentBubble, setSegmentBubble] = useState<{ x: number; y: number } | null>(null);
+  const [segmentInstruction, setSegmentInstruction] = useState("");
+  const [segmentDialogOpen, setSegmentDialogOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const letterRef = useRef<HTMLDivElement>(null);
+  const letterTextRef = useRef<HTMLDivElement>(null);
 
   const scenario = getScenario(scenarioId);
   const currentStyle = getStyle(styleId);
@@ -76,6 +95,10 @@ export default function Home() {
     setError("");
     setSavedOnce(false);
     setCollectedSnapshot(null);
+    setCollected(null);
+    setRewriting(false);
+    setSegmentTarget(null);
+    setSegmentBubble(null);
   }
 
   async function pickScenario(id: string) {
@@ -88,6 +111,7 @@ export default function Home() {
     setError("");
     setSavedOnce(false);
     setCollectedSnapshot(null);
+    setCollected(null);
     await runConverse(id, [], styleId);
   }
 
@@ -180,6 +204,21 @@ export default function Home() {
             } catch {
               /* ignore */
             }
+          } else if (marker === "COLLECTED:json") {
+            const nl = buffer.indexOf("\n");
+            if (nl === -1) {
+              buffer = "[[COLLECTED:json]]" + buffer;
+              break;
+            }
+            const jsonStr = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            try {
+              const c = JSON.parse(jsonStr) as Collected;
+              setCollected(c);
+              setCollectedSnapshot({ receiver: c.receiver });
+            } catch {
+              /* ignore */
+            }
           } else if (marker === "TOOL:json") {
             const nl = buffer.indexOf("\n");
             if (nl === -1) {
@@ -228,11 +267,147 @@ export default function Home() {
     setStage("done");
     setSavedOnce(true);
     setPolishHistory([]);
+    setCollected(null); // 历史记录没有 collected，禁用重写
     setShowHistory(false);
   }
 
   function removeHistory(id: string) {
     setHistory(deleteHistory(id));
+  }
+
+  // ====== 一键重写整封 ======
+  async function runFullRewrite() {
+    if (!collected || !scenarioId || !letter || rewriting) return;
+    setRewriting(true);
+    setError("");
+    const oldLetter = letter;
+    setLetter("");
+    setShowFullRewrite(false);
+    const instruction = fullRewriteInstruction.trim();
+    try {
+      const res = await fetch("/api/rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "full",
+          scenarioId,
+          collected,
+          styleId,
+          letter: oldLetter,
+          userInstruction: instruction || undefined,
+        }),
+      });
+      if (!res.ok || !res.body) throw new Error(await res.text());
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        setLetter((prev) => prev + chunk);
+      }
+      // 重写后让用户重新选择是否保存
+      setSavedOnce(false);
+      setFullRewriteInstruction("");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "重写失败");
+      setLetter(oldLetter); // 失败回滚
+    } finally {
+      setRewriting(false);
+    }
+  }
+
+  // ====== 选段重写 ======
+  function handleLetterMouseUp() {
+    if (rewriting || stage !== "done") return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) {
+      setSegmentBubble(null);
+      setSegmentTarget(null);
+      return;
+    }
+    const text = sel.toString();
+    if (!text || text.trim().length < 4) {
+      setSegmentBubble(null);
+      setSegmentTarget(null);
+      return;
+    }
+    // 校验选区在 letter 容器内
+    const container = letterTextRef.current;
+    if (!container) return;
+    const anchorOk = container.contains(sel.anchorNode);
+    const focusOk = container.contains(sel.focusNode);
+    if (!anchorOk || !focusOk) return;
+
+    // 用 indexOf 在 letter 字符串中定位
+    const start = letter.indexOf(text);
+    if (start < 0) {
+      // 如果跨节点导致字符不完全一致，尝试用 trim 后再找
+      const trimmed = text.trim();
+      const s2 = letter.indexOf(trimmed);
+      if (s2 < 0) return;
+      setSegmentTarget({ selection: trimmed, start: s2, end: s2 + trimmed.length });
+    } else {
+      setSegmentTarget({ selection: text, start, end: start + text.length });
+    }
+    // 浮窗坐标
+    const range = sel.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    setSegmentBubble({ x: rect.left + rect.width / 2, y: rect.top - 8 });
+  }
+
+  function openSegmentDialog() {
+    if (!segmentTarget) return;
+    setSegmentDialogOpen(true);
+    setSegmentInstruction("");
+    setSegmentBubble(null);
+  }
+
+  async function runSegmentRewrite() {
+    if (!collected || !scenarioId || !segmentTarget || rewriting) return;
+    setSegmentDialogOpen(false);
+    setRewriting(true);
+    setError("");
+    const before = letter.slice(0, segmentTarget.start);
+    const after = letter.slice(segmentTarget.end);
+    const oldLetter = letter;
+    const instruction = segmentInstruction.trim();
+    // 实时流式：先清空选段
+    setLetter(before + after);
+    let accumulated = "";
+    try {
+      const res = await fetch("/api/rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "segment",
+          scenarioId,
+          collected,
+          styleId,
+          letter: oldLetter,
+          selection: segmentTarget.selection,
+          userInstruction: instruction || undefined,
+        }),
+      });
+      if (!res.ok || !res.body) throw new Error(await res.text());
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        accumulated += chunk;
+        setLetter(before + accumulated + after);
+      }
+      setSavedOnce(false);
+      setSegmentInstruction("");
+      setSegmentTarget(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "重写失败");
+      setLetter(oldLetter);
+    } finally {
+      setRewriting(false);
+    }
   }
 
   return (
@@ -404,9 +579,13 @@ export default function Home() {
                   className="rounded-xl border border-stone-200 bg-[#fffaf3] p-10 shadow-sm"
                   style={{ fontFamily: '"Songti SC", "STSong", "SimSun", serif' }}
                 >
-                  <div className="whitespace-pre-wrap leading-loose text-stone-800">
+                  <div
+                    ref={letterTextRef}
+                    onMouseUp={handleLetterMouseUp}
+                    className="whitespace-pre-wrap leading-loose text-stone-800"
+                  >
                     {letter}
-                    {(stage === "writing" || stage === "rewriting") && (
+                    {(stage === "writing" || stage === "rewriting" || rewriting) && (
                       <span className="ml-0.5 inline-block h-5 w-2 animate-pulse bg-rose-400 align-middle" />
                     )}
                   </div>
@@ -433,12 +612,25 @@ export default function Home() {
                       🖼️ 导出图片
                     </button>
                     <button
+                      onClick={() => setShowFullRewrite(true)}
+                      disabled={!collected || rewriting}
+                      title={!collected ? "历史信件不支持重写" : "让 AI 再写一版"}
+                      className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-700 hover:border-amber-500 hover:text-amber-900 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      🔁 让 AI 再写一版
+                    </button>
+                    <button
                       onClick={reset}
                       className="rounded-lg bg-rose-500 px-4 py-2 text-sm text-white hover:bg-rose-600"
                     >
                       ✨ 写下一封
                     </button>
                   </div>
+                )}
+                {stage === "done" && collected && (
+                  <p className="mt-2 text-right text-xs text-stone-400">
+                    💡 提示：选中信中任意一段话，可只重写这一段
+                  </p>
                 )}
               </section>
             )}
@@ -460,6 +652,96 @@ export default function Home() {
           onOpen={openHistory}
           onDelete={removeHistory}
         />
+      )}
+
+      {/* 选段重写浮窗 */}
+      {segmentBubble && segmentTarget && !rewriting && (
+        <button
+          onClick={openSegmentDialog}
+          style={{
+            position: "fixed",
+            left: segmentBubble.x,
+            top: segmentBubble.y,
+            transform: "translate(-50%, -100%)",
+            zIndex: 60,
+          }}
+          className="rounded-full border border-rose-300 bg-white px-3 py-1.5 text-xs text-rose-600 shadow-lg hover:bg-rose-50"
+        >
+          ✏️ 重写这段（{segmentTarget.selection.length} 字）
+        </button>
+      )}
+
+      {/* 选段重写对话框 */}
+      {segmentDialogOpen && segmentTarget && (
+        <div className="fixed inset-0 z-70 flex items-center justify-center bg-stone-900/40 backdrop-blur-sm" style={{ zIndex: 70 }}>
+          <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
+            <h3 className="mb-3 text-base font-medium text-stone-800">✏️ 重写选中片段</h3>
+            <div className="mb-3 max-h-32 overflow-y-auto rounded-lg bg-stone-50 p-3 text-sm leading-relaxed text-stone-600">
+              {segmentTarget.selection}
+            </div>
+            <label className="mb-1 block text-xs text-stone-500">
+              想怎么改？（可选，留空让 AI 自行优化）
+            </label>
+            <textarea
+              value={segmentInstruction}
+              onChange={(e) => setSegmentInstruction(e.target.value)}
+              placeholder="例如：写得更克制一点 / 用一个具体物件代替这里的形容词"
+              className="mb-4 h-20 w-full resize-none rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-rose-400"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setSegmentDialogOpen(false);
+                  setSegmentTarget(null);
+                }}
+                className="rounded-lg border border-stone-300 px-4 py-2 text-sm text-stone-600 hover:bg-stone-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={runSegmentRewrite}
+                className="rounded-lg bg-rose-500 px-4 py-2 text-sm text-white hover:bg-rose-600"
+              >
+                开始重写
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 一键整封重写对话框 */}
+      {showFullRewrite && (
+        <div className="fixed inset-0 z-70 flex items-center justify-center bg-stone-900/40 backdrop-blur-sm" style={{ zIndex: 70 }}>
+          <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
+            <h3 className="mb-3 text-base font-medium text-stone-800">🔁 让 AI 再写一版</h3>
+            <p className="mb-3 text-xs text-stone-500">
+              AI 会基于你之前提供的素材重新写一封，与现版本有明显区别。事实纪律不变：不会脑补素材外的内容。
+            </p>
+            <label className="mb-1 block text-xs text-stone-500">
+              想怎么改？（可选）
+            </label>
+            <textarea
+              value={fullRewriteInstruction}
+              onChange={(e) => setFullRewriteInstruction(e.target.value)}
+              placeholder="例如：更口语化一些 / 突出愧疚感 / 减少抒情，多点细节"
+              className="mb-4 h-24 w-full resize-none rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-rose-400"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowFullRewrite(false)}
+                className="rounded-lg border border-stone-300 px-4 py-2 text-sm text-stone-600 hover:bg-stone-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={runFullRewrite}
+                className="rounded-lg bg-rose-500 px-4 py-2 text-sm text-white hover:bg-rose-600"
+              >
+                开始重写
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

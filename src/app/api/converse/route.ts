@@ -5,6 +5,7 @@ import {
   buildWriterPrompt,
   buildPolisherPrompt,
   buildRewriterPrompt,
+  type Collected,
 } from "@/lib/scenarios";
 import { TOOL_SCHEMAS, executeTool } from "@/lib/tools";
 
@@ -15,21 +16,14 @@ const client = new OpenAI({
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
-type Collected = {
-  receiver: string;
-  emotion: string;
-  event: string;
-  tone: string;
-};
-
 type PolishResult = {
   score: number;
   issues: string[];
   suggestions: string;
 };
 
-const PASS_SCORE = 80;
-const MAX_REWRITES = 1; // 最多重写一次（即第二版即终稿）
+const PASS_SCORE = 85;
+const MAX_REWRITES = 2;
 
 /**
  * POST /api/converse
@@ -87,13 +81,25 @@ export async function POST(req: NextRequest) {
           // 解析收集到的结构化信息
           let collected: Collected;
           try {
-            collected = JSON.parse(readyMatch[1].trim());
+            const parsed = JSON.parse(readyMatch[1].trim());
+            collected = {
+              receiver: parsed.receiver || "",
+              relationship: parsed.relationship || "",
+              emotion: parsed.emotion || "",
+              event: parsed.event || "",
+              details: Array.isArray(parsed.details) ? parsed.details : [],
+              background: parsed.background || "",
+              tone: parsed.tone || "",
+            };
           } catch (err) {
             console.error("[converse] JSON 解析失败：", readyMatch[1], err);
             send("（信息收集完毕，但格式解析失败。请重新开始一次。）");
             controller.close();
             return;
           }
+
+          // 把结构化素材推给前端持久化，后续重写要用
+          send(`[[COLLECTED:json]]${JSON.stringify(collected)}\n`);
 
           // ====== 阶段 B：写作者出初稿（流式，但同时累积成字符串以便后续润色） ======
           send("\n[[STAGE:writing]]\n");
