@@ -47,9 +47,10 @@ const MAX_REWRITES = 1; // 最多重写一次（即第二版即终稿）
  */
 export async function POST(req: NextRequest) {
   try {
-    const { scenarioId, messages } = (await req.json()) as {
+    const { scenarioId, messages, styleId } = (await req.json()) as {
       scenarioId: string;
       messages: ChatMessage[];
+      styleId?: string;
     };
 
     if (!scenarioId || !Array.isArray(messages)) {
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
 
           // ====== 阶段 B：写作者出初稿（流式，但同时累积成字符串以便后续润色） ======
           send("\n[[STAGE:writing]]\n");
-          let draft = await streamWriter(controller, encoder, model, collected, scenarioId);
+          let draft = await streamWriter(controller, encoder, model, collected, scenarioId, styleId);
 
           // ====== 阶段 C：润色师评分 ======
           send("\n[[STAGE:polishing]]\n");
@@ -113,7 +114,8 @@ export async function POST(req: NextRequest) {
               collected,
               scenarioId,
               draft,
-              polish
+              polish,
+              styleId
             );
 
             send("\n[[STAGE:polishing]]\n");
@@ -152,9 +154,10 @@ async function streamWriter(
   encoder: TextEncoder,
   model: string,
   collected: Collected,
-  scenarioId: string
+  scenarioId: string,
+  styleId?: string
 ): Promise<string> {
-  const { system, user } = buildWriterPrompt(scenarioId, collected);
+  const { system, user } = buildWriterPrompt(scenarioId, collected, styleId);
   let buffer = "";
   const writerStream = await client.chat.completions.create({
     model,
@@ -182,9 +185,10 @@ async function streamRewriter(
   collected: Collected,
   scenarioId: string,
   prevDraft: string,
-  feedback: PolishResult
+  feedback: PolishResult,
+  styleId?: string
 ): Promise<string> {
-  const { system, user } = buildRewriterPrompt(scenarioId, collected, prevDraft, feedback);
+  const { system, user } = buildRewriterPrompt(scenarioId, collected, prevDraft, feedback, styleId);
   let buffer = "";
   const writerStream = await client.chat.completions.create({
     model,

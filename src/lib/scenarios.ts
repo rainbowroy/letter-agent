@@ -3,6 +3,7 @@
  * 想加新场景？只需要往 SCENARIOS 数组里加一项，前端和 Prompt 都会自动生效。
  * 这是「数据驱动开发」的思路 —— 把"会变"的东西从代码里抽出来。
  */
+import { getStyle } from "./styles";
 
 export type FieldType = "text" | "textarea" | "select";
 
@@ -195,10 +196,12 @@ export function buildListenerSystemPrompt(scenarioId: string): string {
  */
 export function buildWriterPrompt(
   scenarioId: string,
-  collected: { receiver: string; emotion: string; event: string; tone: string }
+  collected: { receiver: string; emotion: string; event: string; tone: string },
+  styleId?: string
 ): { system: string; user: string } {
   const scenario = getScenario(scenarioId);
   if (!scenario) throw new Error(`未知场景：${scenarioId}`);
+  const style = getStyle(styleId);
 
   const system =
     "你是一位中文书信写作大师，擅长写出有温度、有细节、不套路的家书、情书和道歉信。你写的信能让收信人哭、能让收信人笑、能让一段关系真正被修复。";
@@ -216,7 +219,10 @@ export function buildWriterPrompt(
 3. 结尾留白，不要"此致敬礼"。
 4. 避免空洞形容词堆砌，多用具体细节代替抽象情感。
 5. 字数控制在 300-500 字。
-6. 用第一人称中文。`;
+6. 用第一人称中文。
+
+【风格要求 · ${style.name}】
+${style.instruction}`;
 
   return { system, user };
 }
@@ -269,10 +275,12 @@ export function buildRewriterPrompt(
   scenarioId: string,
   collected: { receiver: string; emotion: string; event: string; tone: string },
   previousDraft: string,
-  feedback: { issues: string[]; suggestions: string }
+  feedback: { issues: string[]; suggestions: string },
+  styleId?: string
 ): { system: string; user: string } {
   const scenario = getScenario(scenarioId);
   if (!scenario) throw new Error(`未知场景：${scenarioId}`);
+  const style = getStyle(styleId);
 
   const system =
     "你是一位中文书信写作大师。你刚交了一稿，编辑给出了具体的修改意见。请基于反馈认真重写，让信件更真挚、更具体、更不套路。";
@@ -298,7 +306,10 @@ ${issuesText}
 - 直接交付新版正文，不要解释、不要"修改如下"之类的话。
 - 字数 300-500 字。
 - 第一人称中文。
-- 必须**真的修复**编辑指出的问题，而不是表面调几个词。`;
+- 必须**真的修复**编辑指出的问题，而不是表面调几个词。
+
+【风格要求 · ${style.name}】
+${style.instruction}`;
 
   return { system, user };
 }
