@@ -49,7 +49,39 @@
 [[POLISH:json]]{score:92,issues:[],suggestions:""}  → 评分卡数据
 [[STAGE:rewriting]]     → 评分不够，开始重写（清空信纸重来）
 [[STAGE:done]]          → 全流程结束
+[[TOOL:json]]{name:"...",args:{...},result:{...}}   → Writer 调用工具的实时记录
 ```
+
+### Tool Use · Writer 是真 Agent
+
+Writer / Rewriter 不再「闭着眼写」，他们被授权调用 3 个工具，由模型按需自主决定：
+
+| 工具 | 干什么 | 什么时候被调 |
+|---|---|---|
+| `get_current_date` | 返回今天日期、星期、最近节气、最近节日 | 用户提到天气/季节/节日 → 「立冬这天」「距春节还有 8 天」 |
+| `calculate_days_between` | 精确计算两日期相隔天数 | 用户说「在一起 5 年」→ 「我们在一起 1825 天」更动人 |
+| `search_quotes` | 按风格检索内置真实金句库 | 选了朱自清/王小波/王家卫风格 → 自然化用一句，不再编造伪名言 |
+
+**Tool Loop** 实现要点（`src/app/api/converse/route.ts:runWriterWithTools`）：
+
+```
+LLM(tools=auto) ──┐
+       │         │  返回 tool_calls
+       ▼         │
+  本地执行工具    │
+       │         │
+       ▼         │
+  [[TOOL:json]] →│ 前端实时展示
+       │         │
+       ▼         │
+  tool 结果回喂  │  最多 3 轮
+       └─────────┘
+            │
+            ▼
+   返回最终文本（流式打字机）
+```
+
+工具全部纯本地实现，零外部依赖、零密钥；Schema 用标准 OpenAI Function Calling 格式，DeepSeek / OpenAI / 任意兼容模型即插即用。
 
 ---
 

@@ -15,6 +15,7 @@ import {
 type Stage = "pick" | "chatting" | "writing" | "polishing" | "rewriting" | "done";
 type ChatMessage = { role: "user" | "assistant"; content: string };
 type PolishResult = { score: number; issues: string[]; suggestions: string };
+type ToolCall = { name: string; args: Record<string, unknown>; result: Record<string, unknown> };
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>("pick");
@@ -24,6 +25,7 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [letter, setLetter] = useState("");
   const [polishHistory, setPolishHistory] = useState<PolishResult[]>([]);
+  const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [showThinking, setShowThinking] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -44,7 +46,7 @@ export default function Home() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, letter, stage, polishHistory]);
+  }, [messages, letter, stage, polishHistory, toolCalls]);
 
   // stage 变 done 且尚未保存 → 自动入库
   useEffect(() => {
@@ -70,6 +72,7 @@ export default function Home() {
     setInput("");
     setLetter("");
     setPolishHistory([]);
+    setToolCalls([]);
     setError("");
     setSavedOnce(false);
     setCollectedSnapshot(null);
@@ -81,6 +84,7 @@ export default function Home() {
     setMessages([]);
     setLetter("");
     setPolishHistory([]);
+    setToolCalls([]);
     setError("");
     setSavedOnce(false);
     setCollectedSnapshot(null);
@@ -173,6 +177,20 @@ export default function Home() {
             try {
               const p = JSON.parse(jsonStr);
               setPolishHistory((prev) => [...prev, p]);
+            } catch {
+              /* ignore */
+            }
+          } else if (marker === "TOOL:json") {
+            const nl = buffer.indexOf("\n");
+            if (nl === -1) {
+              buffer = "[[TOOL:json]]" + buffer;
+              break;
+            }
+            const jsonStr = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            try {
+              const t = JSON.parse(jsonStr);
+              setToolCalls((prev) => [...prev, t]);
             } catch {
               /* ignore */
             }
@@ -338,6 +356,19 @@ export default function Home() {
               )}
             </section>
 
+            {toolCalls.length > 0 && (
+              <section className="mt-6">
+                <div className="mb-2 text-xs text-stone-500">
+                  🔧 Agent 工具调用（{toolCalls.length} 次）
+                </div>
+                <div className="space-y-2 rounded-xl border border-dashed border-sky-300 bg-sky-50/40 p-4">
+                  {toolCalls.map((t, i) => (
+                    <ToolCallCard key={i} index={i + 1} call={t} />
+                  ))}
+                </div>
+              </section>
+            )}
+
             {polishHistory.length > 0 && (
               <section className="mt-6">
                 <button
@@ -476,6 +507,64 @@ function PolishCard({ index, polish }: { index: number; polish: PolishResult }) 
       {polish.suggestions && (
         <div className="mt-1.5 text-stone-500">💡 {polish.suggestions}</div>
       )}
+    </div>
+  );
+}
+
+const TOOL_LABELS: Record<string, { name: string; emoji: string }> = {
+  get_current_date: { name: "查询今天日期/节气", emoji: "📅" },
+  calculate_days_between: { name: "计算日期间隔", emoji: "🧮" },
+  search_quotes: { name: "检索风格金句", emoji: "📚" },
+};
+
+function ToolCallCard({ index, call }: { index: number; call: ToolCall }) {
+  const label = TOOL_LABELS[call.name] || { name: call.name, emoji: "🔧" };
+  const summarize = (val: unknown): string => {
+    if (val === null || val === undefined) return "—";
+    if (typeof val === "string") return val.length > 60 ? val.slice(0, 60) + "…" : val;
+    if (typeof val === "number" || typeof val === "boolean") return String(val);
+    if (Array.isArray(val)) return `${val.length} 项`;
+    return JSON.stringify(val);
+  };
+  const resultEntries = Object.entries(call.result || {}).slice(0, 6);
+  return (
+    <div className="rounded-lg bg-white p-3 text-xs text-stone-700 shadow-sm">
+      <div className="mb-1.5 flex items-center gap-2">
+        <span>{label.emoji}</span>
+        <span className="font-medium">第 {index} 次调用 · {label.name}</span>
+        <code className="ml-auto rounded bg-stone-100 px-1.5 py-0.5 text-[10px] text-stone-500">
+          {call.name}
+        </code>
+      </div>
+      {Object.keys(call.args || {}).length > 0 && (
+        <div className="mb-1 text-stone-500">
+          入参：<code className="rounded bg-stone-50 px-1">{JSON.stringify(call.args)}</code>
+        </div>
+      )}
+      <div className="rounded bg-stone-50 p-2 text-stone-600">
+        {resultEntries.length === 0 ? (
+          <span className="text-stone-400">（空）</span>
+        ) : call.name === "search_quotes" && Array.isArray((call.result as { quotes?: unknown[] }).quotes) ? (
+          <ul className="space-y-0.5">
+            {((call.result as { quotes: Array<{ text: string; author: string; source: string }> }).quotes).map(
+              (q, i) => (
+                <li key={i}>
+                  「{q.text}」<span className="text-stone-400">— {q.author}《{q.source}》</span>
+                </li>
+              )
+            )}
+          </ul>
+        ) : (
+          <ul className="space-y-0.5">
+            {resultEntries.map(([k, v]) => (
+              <li key={k}>
+                <span className="text-stone-400">{k}：</span>
+                {summarize(v)}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

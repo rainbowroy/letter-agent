@@ -6,6 +6,7 @@ import {
   buildPolisherPrompt,
   buildRewriterPrompt,
 } from "@/lib/scenarios";
+import { TOOL_SCHEMAS, executeTool } from "@/lib/tools";
 
 const client = new OpenAI({
   apiKey: process.env.LLM_API_KEY,
@@ -44,6 +45,7 @@ const MAX_REWRITES = 1; // 最多重写一次（即第二版即终稿）
  *   [[POLISH:json]]      → 紧跟一行 JSON，前端展示评分卡
  *   [[STAGE:rewriting]]  → 进入"重写"，需要清空前面的信件区
  *   [[STAGE:done]]       → 全部完成
+ *   [[TOOL:json]]        → 紧跟一行 JSON，前端展示 Agent 工具调用
  */
 export async function POST(req: NextRequest) {
   try {
@@ -158,24 +160,7 @@ async function streamWriter(
   styleId?: string
 ): Promise<string> {
   const { system, user } = buildWriterPrompt(scenarioId, collected, styleId);
-  let buffer = "";
-  const writerStream = await client.chat.completions.create({
-    model,
-    temperature: 0.85,
-    stream: true,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-  });
-  for await (const chunk of writerStream) {
-    const t = chunk.choices[0]?.delta?.content || "";
-    if (t) {
-      buffer += t;
-      controller.enqueue(encoder.encode(t));
-    }
-  }
-  return buffer.trim();
+  return runWriterWithTools(controller, encoder, model, system, user);
 }
 
 async function streamRewriter(
@@ -189,17 +174,91 @@ async function streamRewriter(
   styleId?: string
 ): Promise<string> {
   const { system, user } = buildRewriterPrompt(scenarioId, collected, prevDraft, feedback, styleId);
-  let buffer = "";
-  const writerStream = await client.chat.completions.create({
+  return runWriterWithTools(controller, encoder, model, system, user);
+}
+
+/**
+ * Tool-Use Loop：
+ *   先用 non-stream 让模型决定是否调工具；
+ *   每轮把工具结果反馈给前端（[[TOOL:json]] 协议）+ 喂回模型；
+ *   最多 3 轮；最后一轮拿到的助手消息文本既转发为流（伪流式：分块发）也作为 draft 返回。
+ */
+const MAX_TOOL_ROUNDS = 3;
+
+async function runWriterWithTools(
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder,
+  model: string,
+  system: string,
+  user: string
+): Promise<string> {
+  const send = (s: string) => controller.enqueue(encoder.encode(s));
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const resp = await client.chat.completions.create({
+      model,
+      temperature: 0.85,
+      messages,
+      tools: TOOL_SCHEMAS,
+      tool_choice: "auto",
+    });
+    const msg = resp.choices[0]?.message;
+    if (!msg) break;
+
+    const toolCalls = msg.tool_calls || [];
+    if (toolCalls.length === 0) {
+      // 没有工具调用 → 这就是最终回答，流式回放（按字符分块）
+      const finalText = msg.content || "";
+      await streamReplay(controller, encoder, finalText);
+      return finalText.trim();
+    }
+
+    // 把 assistant 这条带 tool_calls 的消息放回上下文
+    messages.push({
+      role: "assistant",
+      content: msg.content ?? "",
+      tool_calls: toolCalls,
+    });
+
+    // 逐个执行工具并把结果回灌
+    for (const call of toolCalls) {
+      if (call.type !== "function") continue;
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = call.function.arguments ? JSON.parse(call.function.arguments) : {};
+      } catch {
+        parsed = {};
+      }
+      const result = executeTool(call.function.name, parsed);
+      send(
+        `\n[[TOOL:json]]${JSON.stringify({
+          name: call.function.name,
+          args: parsed,
+          result,
+        })}\n`
+      );
+      messages.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: JSON.stringify(result),
+      });
+    }
+    // 进入下一轮：模型可能继续调工具，也可能给出最终文本
+  }
+
+  // 工具轮次用尽 → 强制要一次最终文本（不再允许调工具）
+  const finalResp = await client.chat.completions.create({
     model,
     temperature: 0.85,
     stream: true,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
+    messages,
   });
-  for await (const chunk of writerStream) {
+  let buffer = "";
+  for await (const chunk of finalResp) {
     const t = chunk.choices[0]?.delta?.content || "";
     if (t) {
       buffer += t;
@@ -207,6 +266,20 @@ async function streamRewriter(
     }
   }
   return buffer.trim();
+}
+
+/** 把已得到的完整文本伪流式回放，保持前端打字机体验 */
+async function streamReplay(
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder,
+  text: string
+): Promise<void> {
+  const CHUNK = 4;
+  for (let i = 0; i < text.length; i += CHUNK) {
+    controller.enqueue(encoder.encode(text.slice(i, i + CHUNK)));
+    // 轻微 yield，让前端有节奏感（生产环境可关掉）
+    await new Promise((r) => setTimeout(r, 8));
+  }
 }
 
 async function runPolisher(
