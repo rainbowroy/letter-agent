@@ -221,6 +221,88 @@ export function buildWriterPrompt(
   return { system, user };
 }
 
+/**
+ * 阶段 C 的 Prompt：「润色师 / 评审师」
+ * 任务：对写作者生成的信打分（0-100），并给出**具体**改进建议。
+ * 输出严格 JSON，便于程序判断是否需要重写。
+ */
+export function buildPolisherPrompt(
+  scenarioId: string,
+  draft: string,
+  collected: { receiver: string; emotion: string; event: string; tone: string }
+): { system: string; user: string } {
+  const scenario = getScenario(scenarioId);
+  if (!scenario) throw new Error(`未知场景：${scenarioId}`);
+
+  const system = `你是一位严苛的中文书信编辑，从不放水。你的职责是评判一封${scenario.promptType}是否「真情实感、有具体细节、不套路」。
+
+【评分标准（每项 0-25 分，总分 100）】
+1. 具体细节：是否真的引用了用户提供的事件细节（不是抽象转述）。
+2. 反套路：是否避开"亲爱的XXX""此致敬礼""无比""非常"这类公式化表达。
+3. 情感真实：读起来像活人写的，不是模板拼出来的。
+4. 完成度：开头自然 / 结尾留白 / 字数合理（300-500）。
+
+【输出格式】
+你必须严格输出 JSON，不要任何前后文字：
+{"score": 数字, "issues": ["问题1","问题2"], "suggestions": "一句话总结如何改"}
+
+score 是 0-100 整数。如果 score >= 80，issues 可以是空数组。`;
+
+  const user = `请评分以下信件草稿：
+
+【用户提供的素材】
+- 收信人：${collected.receiver}
+- 核心情感：${collected.emotion}
+- 具体事件：${collected.event}
+- 期望语气：${collected.tone}
+
+【草稿正文】
+${draft}`;
+
+  return { system, user };
+}
+
+/**
+ * 第二版写作者 Prompt：带着润色师的反馈重写
+ */
+export function buildRewriterPrompt(
+  scenarioId: string,
+  collected: { receiver: string; emotion: string; event: string; tone: string },
+  previousDraft: string,
+  feedback: { issues: string[]; suggestions: string }
+): { system: string; user: string } {
+  const scenario = getScenario(scenarioId);
+  if (!scenario) throw new Error(`未知场景：${scenarioId}`);
+
+  const system =
+    "你是一位中文书信写作大师。你刚交了一稿，编辑给出了具体的修改意见。请基于反馈认真重写，让信件更真挚、更具体、更不套路。";
+
+  const issuesText = feedback.issues.map((i, idx) => `  ${idx + 1}. ${i}`).join("\n");
+  const user = `这是一封${scenario.promptType}，需要根据编辑反馈重写。
+
+【用户素材】
+- 收信人：${collected.receiver}
+- 核心情感：${collected.emotion}
+- 具体事件：${collected.event}
+- 期望语气：${collected.tone}
+
+【上一版草稿】
+${previousDraft}
+
+【编辑反馈】
+存在的问题：
+${issuesText}
+总体建议：${feedback.suggestions}
+
+请基于反馈重写一封完整的信。重写要求：
+- 直接交付新版正文，不要解释、不要"修改如下"之类的话。
+- 字数 300-500 字。
+- 第一人称中文。
+- 必须**真的修复**编辑指出的问题，而不是表面调几个词。`;
+
+  return { system, user };
+}
+
 
 /**
  * 把表单数据组装成给 LLM 的 prompt。
